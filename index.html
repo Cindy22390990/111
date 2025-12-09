@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>卡通跑酷 (Cartoon Parkour)</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Fredoka+One&display=swap');
+
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #87CEEB; /* 天空藍 */
+            font-family: 'Fredoka One', cursive, sans-serif;
+            touch-action: none; /* 禁止手機縮放與滾動 */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        #game-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            max-width: 800px; /* 電腦版最大寬度 */
+            max-height: 450px; /* 電腦版最大高度 */
+            background: linear-gradient(#87CEEB, #E0F7FA);
+            overflow: hidden;
+            box-shadow: 0 0 20px rgba(0,0,0,0.2);
+        }
+        
+        /* 全螢幕適配手機 */
+        @media (max-width: 800px) {
+            #game-container {
+                max-width: 100%;
+                max-height: 100%;
+                border-radius: 0;
+            }
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        .ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* 讓點擊穿透到 Canvas */
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #score-display {
+            position: absolute;
+            top: 20px;
+            right: 30px;
+            font-size: 2rem;
+            color: #fff;
+            text-shadow: 2px 2px 0 #000;
+            pointer-events: none;
+        }
+
+        .menu {
+            background: rgba(255, 255, 255, 0.9);
+            padding: 2rem;
+            border-radius: 20px;
+            text-align: center;
+            border: 4px solid #FF8E0D;
+            box-shadow: 0 10px 0 rgba(0,0,0,0.1);
+            pointer-events: auto; /* 允許點擊按鈕 */
+            animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        h1 {
+            color: #FF5722;
+            font-size: 3rem;
+            margin: 0 0 1rem 0;
+            text-shadow: 2px 2px 0px #FFCCBC;
+        }
+
+        p {
+            color: #555;
+            font-size: 1.2rem;
+            margin-bottom: 2rem;
+        }
+
+        button.btn-primary {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 1.5rem;
+            border-radius: 50px;
+            cursor: pointer;
+            font-family: 'Fredoka One', cursive;
+            box-shadow: 0 5px 0 #2E7D32;
+            transition: transform 0.1s, box-shadow 0.1s;
+        }
+
+        button.btn-primary:active {
+            transform: translateY(5px);
+            box-shadow: 0 0 0 #2E7D32;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        @keyframes popIn {
+            from { transform: scale(0.5); opacity: 0; }
+            to { transform: scale(1); opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div id="score-display">0m</div>
+
+        <!-- Start Screen -->
+        <div id="start-screen" class="ui-layer">
+            <div class="menu">
+                <h1>卡通跑酷</h1>
+                <p>點擊螢幕或按空白鍵跳躍<br>空中再按一次可<b>二段跳</b>！</p>
+                <button class="btn-primary" onclick="startGame()">開始奔跑</button>
+            </div>
+        </div>
+
+        <!-- Game Over Screen -->
+        <div id="game-over-screen" class="ui-layer hidden">
+            <div class="menu">
+                <h1 style="color: #E53935;">撞到了！</h1>
+                <p>奔跑距離: <span id="final-score" style="color: #E53935; font-size: 1.5rem;">0</span> m</p>
+                <button class="btn-primary" onclick="resetGame()">再試一次</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Game Variables
+        let gameRunning = false;
+        let animationId;
+        let score = 0;
+        let speed = 6;
+        let frameCount = 0;
+
+        // Colors
+        const COLORS = {
+            sky: '#87CEEB',
+            ground: '#4CAF50',
+            groundDark: '#388E3C',
+            player: '#FFEB3B',
+            playerOutline: '#FBC02D',
+            obstacle: '#5D4037'
+        };
+
+        // Resize Handling
+        function resize() {
+            canvas.width = canvas.parentElement.clientWidth;
+            canvas.height = canvas.parentElement.clientHeight;
+            // Floor position varies by screen height
+            groundLevel = canvas.height - 50;
+        }
+        window.addEventListener('resize', resize);
+        
+        let groundLevel;
+
+        // --- Game Objects ---
+
+        class Player {
+            constructor() {
+                this.width = 40;
+                this.height = 40;
+                this.x = 50;
+                this.y = 0; // Set in reset
+                this.dy = 0;
+                this.jumpForce = -13;
+                this.gravity = 0.6;
+                this.grounded = false;
+                this.jumpsLeft = 2; // Double jump support
+                this.rotation = 0;
+            }
+
+            reset() {
+                this.y = groundLevel - this.height;
+                this.dy = 0;
+                this.jumpsLeft = 2;
+                this.rotation = 0;
+            }
+
+            jump() {
+                if (this.jumpsLeft > 0) {
+                    this.dy = this.jumpForce;
+                    this.jumpsLeft--;
+                    this.grounded = false;
+                    
+                    // Add a little particle effect here in a full game
+                    createParticles(this.x + this.width/2, this.y + this.height, 5);
+                }
+            }
+
+            update() {
+                // Gravity
+                this.dy += this.gravity;
+                this.y += this.dy;
+
+                // Ground Collision
+                if (this.y + this.height > groundLevel) {
+                    this.y = groundLevel - this.height;
+                    this.dy = 0;
+                    this.grounded = true;
+                    this.jumpsLeft = 2; // Reset jumps
+                    this.rotation = 0; // Reset rotation
+                } else {
+                    // Rotate while jumping
+                    this.rotation += 0.1; 
+                }
+            }
+
+            draw() {
+                ctx.save();
+                ctx.translate(this.x + this.width/2, this.y + this.height/2);
+                
+                // Rotate based on jump
+                if(!this.grounded) {
+                    ctx.rotate(this.rotation);
+                }
+
+                // Body (Yellow Square)
+                ctx.fillStyle = COLORS.player;
+                ctx.fillRect(-this.width/2, -this.height/2, this.width, this.height);
+                
+                // Outline
+                ctx.lineWidth = 3;
+                ctx.strokeStyle = COLORS.playerOutline;
+                ctx.strokeRect(-this.width/2, -this.height/2, this.width, this.height);
+
+                // Face (Cartoon Eyes)
+                ctx.fillStyle = 'white';
+                // Left Eye
+                ctx.beginPath();
+                ctx.arc(-8, -5, 8, 0, Math.PI*2);
+                ctx.fill();
+                // Right Eye
+                ctx.beginPath();
+                ctx.arc(8, -5, 8, 0, Math.PI*2);
+                ctx.fill();
+
+                // Pupils (Looking forward)
+                ctx.fillStyle = 'black';
+                ctx.beginPath();
+                ctx.arc(-6, -5, 3, 0, Math.PI*2);
+                ctx.arc(10, -5, 3, 0, Math.PI*2);
+                ctx.fill();
+
+                // Headband (Ninja style)
+                ctx.fillStyle = '#FF5722';
+                ctx.fillRect(-this.width/2 - 2, -15, this.width + 4, 8);
+                
+                // Headband tails (animated)
+                if (gameRunning) {
+                    ctx.beginPath();
+                    ctx.moveTo(-this.width/2, -11);
+                    ctx.lineTo(-this.width/2 - 20, -11 - Math.sin(Date.now()/100)*10);
+                    ctx.lineTo(-this.width/2 - 20, -3 - Math.sin(Date.now()/100)*10);
+                    ctx.lineTo(-this.width/2, -3);
+                    ctx.fill();
+                }
+
+                ctx.restore();
+            }
+        }
+
+        class Obstacle {
+            constructor() {
+                this.width = 30 + Math.random() * 30; // Random width
+                this.height = 40 + Math.random() * 30; // Random height
+                this.x = canvas.width + 100;
+                this.y = groundLevel - this.height;
+                this.markedForDeletion = false;
+                this.type = Math.random() > 0.5 ? 'crate' : 'rock';
+            }
+
+            update() {
+                this.x -= speed;
+                if (this.x + this.width < 0) {
+                    this.markedForDeletion = true;
+                }
+            }
+
+            draw() {
+                if (this.type === 'crate') {
+                    // Wooden Crate look
+                    ctx.fillStyle = '#8D6E63';
+                    ctx.fillRect(this.x, this.y, this.width, this.height);
+                    ctx.strokeStyle = '#5D4037';
+                    ctx.lineWidth = 3;
+                    ctx.strokeRect(this.x, this.y, this.width, this.height);
+                    // Cross pattern
+                    ctx.beginPath();
+                    ctx.moveTo(this.x, this.y);
+                    ctx.lineTo(this.x + this.width, this.y + this.height);
+                    ctx.moveTo(this.x + this.width, this.y);
+                    ctx.lineTo(this.x, this.y + this.height);
+                    ctx.stroke();
+                } else {
+                    // Rock look
+                    ctx.fillStyle = '#78909C';
+                    ctx.beginPath();
+                    ctx.moveTo(this.x, this.y + this.height);
+                    ctx.lineTo(this.x + this.width/2, this.y);
+                    ctx.lineTo(this.x + this.width, this.y + this.height);
+                    ctx.fill();
+                }
+            }
+        }
+
+        class Particle {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.size = Math.random() * 5 + 2;
+                this.speedX = Math.random() * 2 - 1;
+                this.speedY = Math.random() * -2 - 1;
+                this.color = 'rgba(255, 255, 255, 0.8)';
+                this.markedForDeletion = false;
+            }
+            update() {
+                this.x += this.speedX;
+                this.y += this.speedY;
+                this.size -= 0.1;
+                if (this.size <= 0) {
+                    this.size = 0;
+                    this.markedForDeletion = true;
+                }
+            }
+            draw() {
+                if (this.size <= 0) return; // Fix: Check size before drawing arc
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI*2);
+                ctx.fill();
+            }
+        }
+
+        class Background {
+            constructor() {
+                this.clouds = [];
+                this.buildings = [];
+                // Init some clouds
+                for(let i=0; i<5; i++) {
+                    this.addCloud(Math.random() * canvas.width);
+                }
+            }
+            
+            addCloud(startX) {
+                this.clouds.push({
+                    x: startX || canvas.width + 100,
+                    y: Math.random() * (canvas.height/2),
+                    radius: 30 + Math.random() * 40,
+                    speed: 0.5 + Math.random() * 1
+                });
+            }
+
+            update() {
+                // Clouds
+                if (frameCount % 200 === 0) this.addCloud();
+                this.clouds.forEach(c => {
+                    c.x -= c.speed;
+                });
+                this.clouds = this.clouds.filter(c => c.x + c.radius*2 > -100);
+            }
+
+            draw() {
+                // Draw Clouds
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+                this.clouds.forEach(c => {
+                    ctx.beginPath();
+                    ctx.arc(c.x, c.y, c.radius, 0, Math.PI*2);
+                    ctx.arc(c.x + c.radius*0.8, c.y - c.radius*0.5, c.radius*0.8, 0, Math.PI*2);
+                    ctx.arc(c.x + c.radius*1.5, c.y, c.radius*0.7, 0, Math.PI*2);
+                    ctx.fill();
+                });
+
+                // Draw Ground
+                ctx.fillStyle = COLORS.ground;
+                ctx.fillRect(0, groundLevel, canvas.width, canvas.height - groundLevel);
+                // Grass details
+                ctx.fillStyle = COLORS.groundDark;
+                ctx.fillRect(0, groundLevel, canvas.width, 10);
+            }
+        }
+
+        // --- Game Logic ---
+
+        const player = new Player();
+        const background = new Background();
+        let obstacles = [];
+        let particles = [];
+
+        function createParticles(x, y, count) {
+            for(let i=0; i<count; i++) {
+                particles.push(new Particle(x, y));
+            }
+        }
+
+        function spawnObstacle() {
+            // Min distance between obstacles depends on speed
+            const minGap = 60 + speed * 15; 
+            
+            // Random chance to spawn if gap is sufficient
+            let lastObstacle = obstacles[obstacles.length - 1];
+            if (!lastObstacle || (canvas.width - lastObstacle.x > minGap)) {
+                if (Math.random() < 0.02 + (score * 0.00001)) { // Chance increases slightly
+                    obstacles.push(new Obstacle());
+                }
+            }
+        }
+
+        function checkCollisions() {
+            for (let obs of obstacles) {
+                // AABB Collision
+                if (
+                    player.x < obs.x + obs.width &&
+                    player.x + player.width > obs.x &&
+                    player.y < obs.y + obs.height &&
+                    player.y + player.height > obs.y
+                ) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        function update() {
+            if (!gameRunning) return;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Difficulty ramping
+            speed += 0.001;
+            score++;
+            document.getElementById('score-display').innerText = Math.floor(score/10) + "m";
+
+            background.update();
+            background.draw();
+
+            player.update();
+            player.draw();
+
+            spawnObstacle();
+
+            // Obstacles
+            obstacles.forEach(obs => {
+                obs.update();
+                obs.draw();
+            });
+            obstacles = obstacles.filter(obs => !obs.markedForDeletion);
+
+            // Particles
+            particles.forEach(p => {
+                p.update();
+                p.draw();
+            });
+            particles = particles.filter(p => !p.markedForDeletion);
+
+            if (checkCollisions()) {
+                gameOver();
+            }
+
+            frameCount++;
+            animationId = requestAnimationFrame(update);
+        }
+
+        function startGame() {
+            resize();
+            player.reset();
+            obstacles = [];
+            particles = [];
+            score = 0;
+            speed = 6;
+            gameRunning = true;
+            document.getElementById('start-screen').classList.add('hidden');
+            document.getElementById('game-over-screen').classList.add('hidden');
+            update();
+        }
+
+        function resetGame() {
+            document.getElementById('game-over-screen').classList.add('hidden');
+            startGame();
+        }
+
+        function gameOver() {
+            gameRunning = false;
+            cancelAnimationFrame(animationId);
+            document.getElementById('final-score').innerText = Math.floor(score/10);
+            document.getElementById('game-over-screen').classList.remove('hidden');
+        }
+
+        // --- Input Handling ---
+
+        function handleJump(e) {
+            // Prevent default behavior (scrolling) if game is running
+            if ((e.type === 'keydown' && e.code === 'Space') || e.type === 'touchstart' || e.type === 'mousedown') {
+                if (gameRunning) {
+                   player.jump();
+                }
+            }
+            
+            // Allow restarting with Space if game over
+            if (e.type === 'keydown' && e.code === 'Space' && !gameRunning && !document.getElementById('game-over-screen').classList.contains('hidden')) {
+                resetGame();
+            }
+        }
+
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault(); // Stop page scroll
+                handleJump(e);
+            }
+        });
+
+        window.addEventListener('mousedown', handleJump);
+        window.addEventListener('touchstart', (e) => {
+            e.preventDefault(); // Stop zoom/scroll
+            handleJump(e);
+        }, {passive: false});
+
+        // Initial setup
+        resize();
+        background.draw(); // Draw static background initially
+        player.reset();
+        player.draw();
+
+    </script>
+</body>
+</html>
